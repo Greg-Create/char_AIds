@@ -45,9 +45,6 @@ export function WheelSpin({ prompts, targetIndex, code, role, onLanded }: WheelS
           🔑 <span className="chip__code">{code}</span>
         </span>
         <RoleBadge role={role} />
-        <span className="text-white wheel-meta__turn">
-          One spin · <strong style={{ color: 'var(--yellow)' }}>everyone acts!</strong>
-        </span>
       </motion.div>
 
       <motion.h2

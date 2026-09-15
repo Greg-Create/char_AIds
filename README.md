@@ -1,4 +1,4 @@
-# char-AIDS 🎭
+# charAIds 🎭
 
 **Act it out. Guess it. Lose your dignity.**
 
@@ -63,6 +63,13 @@ src/
 ## Wheel physics
 
 The spin is a real simulation, not a tween. The rotor has constant bearing friction plus viscous drag, and a pointer flapper that resists the wheel for the first few degrees after every peg. As the wheel slows it visibly hesitates on each peg; if it runs out of energy mid-peg the flapper shoves it back. To land on a chosen prompt, `planSpin` searches launch speeds until the simulated resting angle matches, then the trajectory is played back frame by frame.
+
+## Background
+
+Home and Join play a looping cartoon video (`public/bg-loop.webm` / `.mp4`, poster
+`bg-poster.jpg`). It is shown uncropped with cream gradient overlays fading its
+edges into the page; the page cream is sampled from the video. Reduced-motion and
+data-saver users get the poster. The game screens use the animated purple gradient.
 
 ## Swapping in real sounds
 

@@ -19,12 +19,6 @@ interface ActingRoundProps {
   onDone: () => void;
 }
 
-const SUBTITLE: Record<Stage, string> = {
-  camera: 'Say yes to the camera… 📸',
-  preroll: 'Get ready… 🎬',
-  acting: 'Everyone act it out! No talking! 🤐',
-  over: "Time's up! 🎉",
-};
 
 export function ActingRound({ role, prompt, onDone }: ActingRoundProps) {
   const sound = useSound();
@@ -82,11 +76,6 @@ export function ActingRound({ role, prompt, onDone }: ActingRoundProps) {
             SHOWTIME!
           </motion.h2>
           <RoleBadge role={role} />
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.p key={stage} className="acting__sub" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.2 }}>
-              {SUBTITLE[stage]}
-            </motion.p>
-          </AnimatePresence>
         </div>
 
         <motion.div initial={{ scale: 0, rotate: 12 }} animate={{ scale: 1, rotate: 0 }} transition={{ type: 'spring', stiffness: 260, damping: 14, delay: 0.2 }}>

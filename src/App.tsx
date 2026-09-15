@@ -89,7 +89,7 @@ function Game() {
 
   return (
     <div className="app">
-      <Background />
+      <Background variant={screen === 'home' || screen === 'join' ? 'video' : 'gradient'} />
       <SoundToggle />
       <AnimatePresence mode="wait">
         {screen === 'home' && <Home key="home" onStart={startGame} onJoin={() => setScreen('join')} />}

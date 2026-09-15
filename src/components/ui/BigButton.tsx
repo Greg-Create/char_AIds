@@ -29,7 +29,6 @@ export function BigButton({ variant = 'secondary', size = 'md', icon, children, 
       }}
       {...rest}
     >
-      <span className="btn__shine" />
       {icon && <span aria-hidden>{icon}</span>}
       <span>{children}</span>
       {attention && (
