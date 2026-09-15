@@ -18,5 +18,5 @@ export function HostWaiting({ text }: { text: string }) {
 }
 
 export function RoleBadge({ role }: { role: 'host' | 'guest' }) {
-  return <span className={`role-badge role-badge--${role}`}>{role === 'host' ? '👑 Host' : '🎟️ Player'}</span>;
+  return <span className={`role-badge role-badge--${role}`}>{role === 'host' ? '👑 Player 1' : '🎟️ Player 2'}</span>;
 }

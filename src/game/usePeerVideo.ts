@@ -1,34 +1,27 @@
 import { useEffect, useState } from 'react';
 import { gameApi, type GameSignal, type Session } from '../api';
 
-function iceServers(): RTCIceServer[] {
-  const servers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
-  const turnUrl = import.meta.env.VITE_TURN_URL as string | undefined;
-  if (turnUrl) {
-    servers.push({
-      urls: turnUrl,
-      username: import.meta.env.VITE_TURN_USERNAME as string | undefined,
-      credential: import.meta.env.VITE_TURN_CREDENTIAL as string | undefined,
-    });
-  }
-  return servers;
-}
-
-export function usePeerVideo(session: Session | null, localStream: MediaStream | null, active: boolean) {
+/**
+ * One-way WebRTC video for a turn: the acting player (offerer) sends its
+ * camera, the watching player receives it. Signals go through the local API.
+ * Both Macs are on the same network, so host candidates are enough; STUN is a
+ * harmless extra.
+ */
+export function usePeerVideo(session: Session | null, localStream: MediaStream | null, active: boolean, offerer: boolean) {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [connectionState, setConnectionState] = useState<RTCPeerConnectionState>('new');
 
   useEffect(() => {
-    if (!session || !localStream || !active || typeof RTCPeerConnection === 'undefined') return;
+    if (!session || !active || typeof RTCPeerConnection === 'undefined') return;
+    if (offerer && !localStream) return;
     let lastSignalId = 0;
     const queuedCandidates: RTCIceCandidateInit[] = [];
-    const peer = new RTCPeerConnection({ iceServers: iceServers() });
+    const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
-    localStream.getTracks().forEach((track) => peer.addTrack(track, localStream));
-    peer.ontrack = (event) => {
-      const stream = event.streams[0] ?? new MediaStream([event.track]);
-      setRemoteStream(stream);
-    };
+    if (offerer && localStream) localStream.getTracks().forEach((track) => peer.addTrack(track, localStream));
+    else peer.addTransceiver('video', { direction: 'recvonly' });
+
+    peer.ontrack = (event) => setRemoteStream(event.streams[0] ?? new MediaStream([event.track]));
     peer.onconnectionstatechange = () => setConnectionState(peer.connectionState);
     peer.onicecandidate = (event) => {
       if (event.candidate) void gameApi.sendSignal(session, { kind: 'ice', data: event.candidate.toJSON() }).catch(() => undefined);
@@ -39,20 +32,20 @@ export function usePeerVideo(session: Session | null, localStream: MediaStream |
     };
 
     const handleSignal = async (signal: GameSignal) => {
-      if (signal.kind === 'offer' && session.role === 'guest') {
+      if (signal.kind === 'offer' && !offerer) {
         await peer.setRemoteDescription(signal.data as RTCSessionDescriptionInit);
         await flushCandidates();
         const answer = await peer.createAnswer();
         await peer.setLocalDescription(answer);
         await gameApi.sendSignal(session, { kind: 'answer', data: answer });
-      } else if (signal.kind === 'answer' && session.role === 'host') {
+      } else if (signal.kind === 'answer' && offerer) {
         if (!peer.currentRemoteDescription) {
           await peer.setRemoteDescription(signal.data as RTCSessionDescriptionInit);
           await flushCandidates();
         }
       } else if (signal.kind === 'ice') {
         const candidate = signal.data as RTCIceCandidateInit;
-        if (peer.currentRemoteDescription) await peer.addIceCandidate(candidate);
+        if (peer.currentRemoteDescription) await peer.addIceCandidate(candidate).catch(() => undefined);
         else queuedCandidates.push(candidate);
       }
     };
@@ -65,12 +58,12 @@ export function usePeerVideo(session: Session | null, localStream: MediaStream |
           await handleSignal(signal);
         }
       } catch {
-        // A later poll retries while the round is active.
+        // Retried on the next poll.
       }
     };
 
     const connect = async () => {
-      if (session.role === 'host') {
+      if (offerer) {
         const offer = await peer.createOffer();
         await peer.setLocalDescription(offer);
         await gameApi.sendSignal(session, { kind: 'offer', data: offer });
@@ -87,8 +80,9 @@ export function usePeerVideo(session: Session | null, localStream: MediaStream |
       peer.onconnectionstatechange = null;
       peer.close();
       setRemoteStream(null);
+      setConnectionState('new');
     };
-  }, [active, localStream, session]);
+  }, [active, localStream, offerer, session]);
 
   return { remoteStream, connectionState };
 }

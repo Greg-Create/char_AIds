@@ -1,11 +1,9 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Role } from '../App';
 import { gameApi, type Session } from '../api';
 import type { Prompt } from '../data/prompts';
 import { useSound } from '../audio/SoundProvider';
-import { Camera, PeerCamera } from '../components/game/Camera';
-import { RoleBadge } from '../components/ui/HostWaiting';
+import { Camera } from '../components/game/Camera';
 import { TimerBar, TimerNumber, useRoundTimer } from '../components/game/Countdown';
 import { burstConfetti } from '../components/fx/confetti';
 import { startRoundCapture, type RoundCapture } from '../game/recordRound';
@@ -16,17 +14,16 @@ export const ROUND_SECONDS = 15;
 type Stage = 'camera' | 'preroll' | 'acting' | 'over';
 
 interface ActingRoundProps {
-  role: Role;
   prompt: Prompt;
   session: Session;
+  turn: 0 | 1;
   startedAt: number;
   endsAt: number;
-  playerCount: number;
   onDone: (clip: Blob | null) => void;
 }
 
-
-export function ActingRound({ role, prompt, session, startedAt, endsAt, playerCount, onDone }: ActingRoundProps) {
+/** The acting player's screen: camera, countdown, recording, live feed to the other Mac. */
+export function ActingRound({ prompt, session, turn, startedAt, endsAt, onDone }: ActingRoundProps) {
   const sound = useSound();
   const [stage, setStage] = useState<Stage>('camera');
   const [pre, setPre] = useState(Math.max(0, Math.ceil((startedAt - Date.now()) / 1000)));
@@ -38,7 +35,7 @@ export function ActingRound({ role, prompt, session, startedAt, endsAt, playerCo
   const finishedRef = useRef(false);
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
-  const { remoteStream, connectionState } = usePeerVideo(session, localStream, playerCount === 2);
+  usePeerVideo(session, localStream, true, true);
 
   const handleSecond = useCallback((whole: number) => {
     if (whole <= 3) sound.finalCountdown();
@@ -64,14 +61,9 @@ export function ActingRound({ role, prompt, session, startedAt, endsAt, playerCo
     })();
   }, [sound]);
 
-  const timer = useRoundTimer({
-    seconds: ROUND_SECONDS,
-    endsAt,
-    running: stage === 'acting',
-    onSecond: handleSecond,
-    onDone: handleDone,
-  });
+  const timer = useRoundTimer({ seconds: ROUND_SECONDS, endsAt, running: stage === 'acting', onSecond: handleSecond, onDone: handleDone });
 
+  // Pre-roll is driven by the server's start time so both Macs agree.
   useEffect(() => {
     if (stage !== 'preroll') return;
     let lastWhole = pre;
@@ -88,7 +80,8 @@ export function ActingRound({ role, prompt, session, startedAt, endsAt, playerCo
     tick();
     const interval = window.setInterval(tick, 100);
     return () => window.clearInterval(interval);
-  }, [pre, sound, stage, startedAt]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, startedAt]);
 
   useEffect(() => {
     if (stage !== 'acting' || !localStream || captureRef.current) return;
@@ -115,9 +108,9 @@ export function ActingRound({ role, prompt, session, startedAt, endsAt, playerCo
       <div className="acting">
         <div className="acting__header">
           <motion.h2 className="display acting__user" initial={{ y: -60, scale: 0.6, opacity: 0 }} animate={{ y: 0, scale: 1, opacity: 1 }} transition={{ type: 'spring', stiffness: 300, damping: 14 }}>
-            SHOWTIME!
+            YOUR TURN!
           </motion.h2>
-          <RoleBadge role={role} />
+          <span className="role-badge role-badge--host">🎬 Player {turn + 1}</span>
         </div>
 
         <motion.div initial={{ scale: 0, rotate: 12 }} animate={{ scale: 1, rotate: 0 }} transition={{ type: 'spring', stiffness: 260, damping: 14, delay: 0.2 }}>
@@ -133,8 +126,6 @@ export function ActingRound({ role, prompt, session, startedAt, endsAt, playerCo
             )}
           </AnimatePresence>
         </Camera>
-
-        <PeerCamera stream={remoteStream} state={connectionState} />
 
         <motion.div className="acting__bar" initial={{ scaleX: 0.3, opacity: 0 }} animate={{ scaleX: 1, opacity: 1 }}>
           <TimerBar frac={timer.frac} color={timer.color} urgent={timer.urgent} />

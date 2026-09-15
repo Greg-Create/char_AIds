@@ -44,6 +44,8 @@ export type Room = {
   status: RoomStatus;
   roundNumber: number;
   prompt?: string;
+  /** Which player is acting: players[turn]. Player 1 goes first, then player 2. */
+  turn: 0 | 1;
   startedAt?: number;
   endsAt?: number;
   players: Player[];

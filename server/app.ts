@@ -1,25 +1,33 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { networkInterfaces } from "node:os";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { analyzeVideoSegment, compareSegmentScores, GEMINI_MODEL } from "./gemini.js";
-import { clipStorageMode, deleteClip, deleteRoom, getClip, getRoom, roomStorageMode, saveClip, saveRoom, updateRoom } from "./store.js";
+import { deleteClip, deleteRoom, getClip, getRoom, listRooms, saveClip, saveRoom, updateRoom } from "./store.js";
 import type { Player, Room } from "./types.js";
 import { postLosingClip } from "./x.js";
 import { PROMPT_DEFINITIONS } from "../shared/prompts.js";
 
+/**
+ * Local two-Mac charades API.
+ *
+ * - No room codes: the first PLAY creates a room, the second PLAY on the same
+ *   network joins it automatically.
+ * - Turn based: player 1 acts for 15 seconds while player 2 watches, then they
+ *   swap, then Gemini compares both performances.
+ */
+
 const app = express();
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: (clipStorageMode === "memory" && !process.env.VERCEL ? 25 : 4) * 1024 * 1024, files: 1 },
-});
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 40 * 1024 * 1024, files: 1 } });
 const prompts = PROMPT_DEFINITIONS.map((prompt) => prompt.label);
 const codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const supportedVideoTypes = ["video/mp4", "video/webm", "video/quicktime"];
+const PREROLL_MS = 4000;
+const ROUND_MS = 15_000;
+const OPEN_ROOM_MAX_AGE_MS = 15 * 60 * 1000;
+export const WEB_PORT = Number(process.env.WEB_PORT || 5173);
 
 app.use((request, response, next) => {
-  const allowed = process.env.ALLOWED_ORIGIN || request.headers.origin || "*";
-  response.setHeader("Access-Control-Allow-Origin", allowed);
+  response.setHeader("Access-Control-Allow-Origin", request.headers.origin || "*");
   response.setHeader("Vary", "Origin");
   response.setHeader("Access-Control-Allow-Headers", "authorization, content-type, x-player-id");
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -32,15 +40,20 @@ const hashToken = (token: string) => createHash("sha256").update(token).digest("
 const issueToken = () => randomBytes(24).toString("base64url");
 const makeCode = () => Array.from(randomBytes(6), (byte) => codeAlphabet[byte % codeAlphabet.length]).join("");
 
+/** LAN addresses the second Mac can open. */
+export function lanUrls(port = WEB_PORT) {
+  const urls: string[] = [];
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) urls.push(`https://${entry.address}:${port}`);
+    }
+  }
+  return urls;
+}
+
 function createPlayer() {
   const token = issueToken();
-  const player: Player = {
-    id: randomUUID(),
-    tokenHash: hashToken(token),
-    ready: false,
-    consent: false,
-    observations: [],
-  };
+  const player: Player = { id: randomUUID(), tokenHash: hashToken(token), ready: false, consent: false, observations: [] };
   return { player, token };
 }
 
@@ -50,6 +63,10 @@ function authenticate(request: Request, room: Room) {
   const player = room.players.find((item) => item.id === playerId);
   if (!player || !token || player.tokenHash !== hashToken(token)) throw new Error("UNAUTHORIZED");
   return player;
+}
+
+function actorOf(room: Room) {
+  return room.players[room.turn];
 }
 
 function roomView(room: Room, requesterId?: string) {
@@ -63,79 +80,73 @@ function roomView(room: Room, requesterId?: string) {
     postStatus: room.result.postStatus,
     postUrl: room.result.postUrl,
   } : undefined;
+  const actor = actorOf(room);
   return {
     roomCode: room.code,
     status: room.status,
     roundNumber: room.roundNumber || 0,
     prompt: room.status === "lobby" ? undefined : room.prompt,
+    turn: room.turn,
+    actorId: room.status === "round" ? actor?.id : undefined,
+    youAreActor: room.status === "round" && Boolean(requester) && actor?.id === requester?.id,
+    yourIndex: requester ? room.players.indexOf(requester) : -1,
     startedAt: room.startedAt,
     endsAt: room.endsAt,
-    players: room.players.map((player) => ({
-      id: player.id,
-      ready: player.ready,
-      consent: player.consent,
-      clipReady: Boolean(player.clipPath),
-    })),
+    players: room.players.map((player) => ({ id: player.id, ready: player.ready, consent: player.consent, clipReady: Boolean(player.clipPath) })),
     result,
   };
 }
 
-async function createUniqueRoom() {
+function resetRound(room: Room) {
+  room.roundNumber = (room.roundNumber || 0) + 1;
+  room.status = "wheel";
+  room.prompt = prompts[Math.floor(Math.random() * prompts.length)];
+  room.turn = 0;
+  room.startedAt = undefined;
+  room.endsAt = undefined;
+  room.result = undefined;
+  room.judgingBy = undefined;
+  room.signals = [];
+  room.nextSignalId = 1;
+  room.players.forEach((player) => {
+    player.clipPath = undefined;
+    player.clipMimeType = undefined;
+    player.observations = [];
+  });
+}
+
+async function createRoom() {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const code = makeCode();
     if (await getRoom(code)) continue;
     const { player, token } = createPlayer();
     const now = Date.now();
-    const room: Room = {
-      code,
-      version: 0,
-      createdAt: now,
-      updatedAt: now,
-      status: "lobby",
-      roundNumber: 0,
-      players: [player],
-      signals: [],
-      nextSignalId: 1,
-    };
-    try {
-      await saveRoom(room, true);
-      return { room, player, token };
-    } catch (error) {
-      if ((error as Error).message !== "ROOM_EXISTS") throw error;
-    }
+    const room: Room = { code, version: 0, createdAt: now, updatedAt: now, status: "lobby", roundNumber: 0, turn: 0, players: [player], signals: [], nextSignalId: 1 };
+    await saveRoom(room, true);
+    return { roomCode: room.code, playerId: player.id, playerToken: token, role: "host" as const };
   }
-  throw new Error("Could not allocate a room code");
+  throw new Error("Could not allocate a room");
 }
 
 app.get("/api/health", (_request, response) => {
-  response.json({
-    ok: true,
-    roomStorage: roomStorageMode,
-    clipStorage: clipStorageMode,
-    gemini: Boolean(process.env.GEMINI_API_KEY),
-    geminiModel: GEMINI_MODEL,
-    videoIngestion: "native-video-windows-5fps",
-    verdictDeadlineMs: 3000,
-    directClipUpload: clipStorageMode === "vercel-blob",
-    xPosting: process.env.ENABLE_X_POSTS === "true" && Boolean(process.env.X_USER_ACCESS_TOKEN),
-  });
+  response.json({ ok: true, gemini: Boolean(process.env.GEMINI_API_KEY), geminiModel: GEMINI_MODEL, lanUrls: lanUrls() });
 });
 
-app.post("/api/rooms", async (_request, response) => {
-  const { room, player, token } = await createUniqueRoom();
-  response.status(201).json({ roomCode: room.code, playerId: player.id, playerToken: token, role: "host" });
-});
-
-app.post("/api/rooms/:code/join", async (request, response) => {
-  const code = String(request.params.code).toUpperCase();
-  const session = await updateRoom(code, (room) => {
-    if (room.players.length >= 2) throw new Error("ROOM_FULL");
-    if (room.status !== "lobby") throw new Error("ROUND_IN_PROGRESS");
-    const { player, token } = createPlayer();
-    room.players.push(player);
-    return { roomCode: room.code, playerId: player.id, playerToken: token, role: "guest" as const };
-  });
-  response.status(201).json(session);
+/** Pair automatically: join the open room on this server, or open a new one. */
+app.post("/api/rooms/auto", async (_request, response) => {
+  const open = listRooms()
+    .filter((room) => room.status === "lobby" && room.players.length === 1 && Date.now() - room.updatedAt < OPEN_ROOM_MAX_AGE_MS)
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  if (open) {
+    const session = await updateRoom(open.code, (room) => {
+      if (room.players.length >= 2 || room.status !== "lobby") throw new Error("ROOM_FULL");
+      const { player, token } = createPlayer();
+      room.players.push(player);
+      return { roomCode: room.code, playerId: player.id, playerToken: token, role: "guest" as const };
+    }).catch(() => null);
+    if (session) return response.status(201).json(session);
+  }
+  response.status(201).json(await createRoom());
 });
 
 app.get("/api/rooms/:code", async (request, response) => {
@@ -159,6 +170,7 @@ app.post("/api/rooms/:code/leave", async (request, response) => {
       current.players = current.players.filter((item) => item.id !== leaving.id);
       current.status = "lobby";
       current.prompt = undefined;
+      current.turn = 0;
       current.startedAt = undefined;
       current.endsAt = undefined;
       current.result = undefined;
@@ -186,23 +198,9 @@ app.post("/api/rooms/:code/start", async (request, response) => {
     const player = authenticate(request, room);
     if (room.players[0]?.id !== player.id) throw new Error("HOST_ONLY");
     if (room.players.length !== 2) throw new Error("OPPONENT_NOT_FOUND");
-    if (room.status === "result" && room.result?.postStatus === "publishing") throw new Error("POST_IN_PROGRESS");
     if (room.status === "lobby" && !room.players.every((item) => item.ready)) throw new Error("PLAYERS_NOT_READY");
     if (!["lobby", "result"].includes(room.status)) throw new Error("ROUND_IN_PROGRESS");
-    room.roundNumber = (room.roundNumber || 0) + 1;
-    room.status = "wheel";
-    room.prompt = prompts[Math.floor(Math.random() * prompts.length)];
-    room.startedAt = undefined;
-    room.endsAt = undefined;
-    room.result = undefined;
-    room.judgingBy = undefined;
-    room.signals = [];
-    room.nextSignalId = 1;
-    room.players.forEach((item) => {
-      item.clipPath = undefined;
-      item.clipMimeType = undefined;
-      item.observations = [];
-    });
+    resetRound(room);
     return roomView(room, player.id);
   });
   response.json(view);
@@ -217,10 +215,34 @@ app.post("/api/rooms/:code/advance", async (request, response) => {
       room.status = "reveal";
     } else if (room.status === "reveal" && destination === "round") {
       room.status = "round";
-      room.startedAt = Date.now() + 4000;
-      room.endsAt = room.startedAt + 15_000;
+      room.turn = 0;
+      room.signals = [];
+      room.startedAt = Date.now() + PREROLL_MS;
+      room.endsAt = room.startedAt + ROUND_MS;
     } else {
       throw new Error("INVALID_TRANSITION");
+    }
+    return roomView(room, player.id);
+  });
+  response.json(view);
+});
+
+/** The acting player is done: hand the camera to player 2, or go to judging. */
+app.post("/api/rooms/:code/finish", async (request, response) => {
+  const view = await updateRoom(String(request.params.code).toUpperCase(), (room) => {
+    const player = authenticate(request, room);
+    if (room.status !== "round") return roomView(room, player.id);
+    if (actorOf(room)?.id !== player.id) throw new Error("NOT_YOUR_TURN");
+    if (room.turn === 0) {
+      room.turn = 1;
+      room.signals = [];
+      room.nextSignalId = 1;
+      room.startedAt = Date.now() + PREROLL_MS;
+      room.endsAt = room.startedAt + ROUND_MS;
+    } else {
+      room.status = "judging";
+      room.startedAt = undefined;
+      room.endsAt = undefined;
     }
     return roomView(room, player.id);
   });
@@ -232,18 +254,12 @@ app.post("/api/rooms/:code/segments", upload.single("segment"), async (request, 
   const code = String(request.params.code).toUpperCase();
   const room = await getRoom(code);
   if (!room) throw new Error("ROOM_NOT_FOUND");
-  authenticate(request, room);
-  if (!["round", "judging"].includes(room.status) || !room.prompt) return response.status(409).json({ error: "Round is not active" });
+  const player = authenticate(request, room);
+  if (room.status !== "round" || !room.prompt) return response.status(409).json({ error: "Round is not active" });
+  if (actorOf(room)?.id !== player.id) return response.status(409).json({ error: "Not your turn" });
   const segmentIndex = Number(request.body?.segmentIndex);
-  if (!Number.isInteger(segmentIndex) || segmentIndex < 0 || segmentIndex > 9) {
-    return response.status(400).json({ error: "Invalid segment index" });
-  }
-  const observation = await analyzeVideoSegment(
-    room.prompt,
-    request.file.buffer,
-    request.file.mimetype || "video/webm",
-    segmentIndex,
-  );
+  if (!Number.isInteger(segmentIndex) || segmentIndex < 0 || segmentIndex > 9) return response.status(400).json({ error: "Invalid segment index" });
+  const observation = await analyzeVideoSegment(room.prompt, request.file.buffer, request.file.mimetype || "video/webm", segmentIndex);
   await updateRoom(code, (current) => {
     const currentPlayer = authenticate(request, current);
     currentPlayer.observations = currentPlayer.observations
@@ -261,68 +277,14 @@ app.post("/api/rooms/:code/clips", upload.single("clip"), async (request, respon
   const room = await getRoom(code);
   if (!room) throw new Error("ROOM_NOT_FOUND");
   const player = authenticate(request, room);
-  if (!room.endsAt || Date.now() < room.endsAt - 2000) return response.status(409).json({ error: "Round has not ended" });
   const extension = request.file.mimetype.startsWith("video/mp4") ? "mp4" : "webm";
   const path = `clips/${room.code}/${player.id}.${extension}`;
-  await saveClip(path, request.file.buffer, request.file.mimetype || `video/${extension}`);
+  await saveClip(path, request.file.buffer);
   const view = await updateRoom(code, (current) => {
     const currentPlayer = authenticate(request, current);
     currentPlayer.clipPath = path;
     currentPlayer.clipMimeType = request.file!.mimetype || `video/${extension}`;
-    if (current.status !== "result" && current.players.length === 2 && current.players.every((item) => item.clipPath)) current.status = "judging";
     return roomView(current, currentPlayer.id);
-  });
-  response.status(201).json(view);
-});
-
-app.post("/api/rooms/:code/blob-upload", async (request, response) => {
-  if (clipStorageMode !== "vercel-blob") return response.status(409).json({ error: "Direct Blob uploads are not configured" });
-  const code = String(request.params.code).toUpperCase();
-  const result = await handleUpload({
-    body: request.body as HandleUploadBody,
-    request,
-    onBeforeGenerateToken: async (pathname) => {
-      const room = await getRoom(code);
-      if (!room) throw new Error("ROOM_NOT_FOUND");
-      const player = authenticate(request, room);
-      const expectedPrefix = `clips/${room.code}/${player.id}.`;
-      if (!pathname.startsWith(expectedPrefix)) throw new Error("INVALID_CLIP_PATH");
-      return {
-        allowedContentTypes: supportedVideoTypes,
-        maximumSizeInBytes: 25 * 1024 * 1024,
-        addRandomSuffix: false,
-        allowOverwrite: true,
-        tokenPayload: JSON.stringify({ code: room.code, playerId: player.id, pathname }),
-      };
-    },
-    onUploadCompleted: async ({ blob, tokenPayload }) => {
-      if (!tokenPayload) return;
-      const payload = JSON.parse(tokenPayload) as { code: string; playerId: string; pathname: string };
-      if (blob.pathname !== payload.pathname) throw new Error("INVALID_CLIP_PATH");
-      await updateRoom(payload.code, (room) => {
-        const player = room.players.find((item) => item.id === payload.playerId);
-        if (!player || !blob.pathname.startsWith(`clips/${room.code}/${player.id}.`)) throw new Error("UNAUTHORIZED");
-        player.clipPath = blob.pathname;
-        player.clipMimeType = blob.contentType;
-      });
-    },
-  });
-  response.json(result);
-});
-
-app.post("/api/rooms/:code/clips/register", async (request, response) => {
-  if (clipStorageMode !== "vercel-blob") return response.status(409).json({ error: "Direct Blob uploads are not configured" });
-  const code = String(request.params.code).toUpperCase();
-  const view = await updateRoom(code, (room) => {
-    const player = authenticate(request, room);
-    const pathname = String(request.body?.pathname || "");
-    const contentType = String(request.body?.contentType || "").split(";")[0];
-    if (!pathname.startsWith(`clips/${room.code}/${player.id}.`) || !supportedVideoTypes.includes(contentType)) {
-      throw new Error("INVALID_CLIP_PATH");
-    }
-    player.clipPath = pathname;
-    player.clipMimeType = contentType;
-    return roomView(room, player.id);
   });
   response.status(201).json(view);
 });
@@ -334,31 +296,19 @@ app.post("/api/rooms/:code/judge", async (request, response) => {
   const requester = authenticate(request, room);
   if (room.result) return response.json(roomView(room, requester.id).result);
   if (room.players.length !== 2) return response.status(409).json({ error: "Waiting for opponent" });
-  if (room.endsAt && Date.now() < room.endsAt - 500) return response.status(409).json({ error: "Round is still active" });
-  if (room.judgingBy && room.judgingBy !== requester.id) {
-    return response.status(409).json({ error: "Judging already started" });
-  }
-  await updateRoom(code, (current) => { current.judgingBy = requester.id; current.status = "judging"; });
+  if (room.status !== "judging") return response.status(409).json({ error: "Both turns must finish first" });
+  if (room.judgingBy && room.judgingBy !== requester.id) return response.status(409).json({ error: "Judging already started" });
+  await updateRoom(code, (current) => { current.judgingBy = requester.id; });
 
   const fresh = await getRoom(code);
   if (!fresh?.prompt) throw new Error("ROOM_NOT_FOUND");
   const comparison = await compareSegmentScores(fresh.prompt, fresh.players);
   const winner = fresh.players[comparison.winnerIndex];
-  const canPublish = fresh.players.every((player) => player.consent)
-    && process.env.ENABLE_X_POSTS === "true"
-    && Boolean(process.env.X_USER_ACCESS_TOKEN);
-  const scores = {
-    [fresh.players[0].id]: comparison.scores[0],
-    [fresh.players[1].id]: comparison.scores[1],
-  };
+  const canPublish = fresh.players.every((player) => player.consent) && process.env.ENABLE_X_POSTS === "true" && Boolean(process.env.X_USER_ACCESS_TOKEN);
+  const scores = { [fresh.players[0].id]: comparison.scores[0], [fresh.players[1].id]: comparison.scores[1] };
   const result = await updateRoom(code, (current) => {
     current.status = "result";
-    current.result = {
-      winnerPlayerId: winner.id,
-      scores,
-      verdict: comparison.verdict,
-      postStatus: canPublish ? "queued" : "disabled",
-    };
+    current.result = { winnerPlayerId: winner.id, scores, verdict: comparison.verdict, postStatus: canPublish ? "queued" : "disabled" };
     return roomView(current, requester.id).result;
   });
   response.json(result);
@@ -409,14 +359,7 @@ app.post("/api/rooms/:code/signals", async (request, response) => {
     if (!other) throw new Error("OPPONENT_NOT_FOUND");
     const kind = request.body?.kind;
     if (!["offer", "answer", "ice"].includes(kind)) throw new Error("INVALID_SIGNAL");
-    const item = {
-      id: room.nextSignalId++,
-      from: player.id,
-      to: other.id,
-      kind,
-      data: request.body.data,
-      createdAt: Date.now(),
-    };
+    const item = { id: room.nextSignalId++, from: player.id, to: other.id, kind, data: request.body.data, createdAt: Date.now() };
     room.signals.push(item);
     room.signals = room.signals.slice(-100);
     return item;
@@ -436,8 +379,8 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
   const message = error instanceof Error ? error.message : "Unknown error";
   const status = message === "UNAUTHORIZED" ? 401
     : message === "ROOM_NOT_FOUND" ? 404
-      : ["ROOM_FULL", "ROUND_IN_PROGRESS", "OPPONENT_NOT_FOUND", "PLAYERS_NOT_READY", "HOST_ONLY", "POST_IN_PROGRESS"].includes(message) ? 409
-        : ["INVALID_SIGNAL", "INVALID_TRANSITION", "INVALID_CLIP_PATH"].includes(message) ? 400 : 500;
+      : ["ROOM_FULL", "ROUND_IN_PROGRESS", "OPPONENT_NOT_FOUND", "PLAYERS_NOT_READY", "HOST_ONLY", "NOT_YOUR_TURN"].includes(message) ? 409
+        : ["INVALID_SIGNAL", "INVALID_TRANSITION"].includes(message) ? 400 : 500;
   if (status === 500) console.error(error);
   response.status(status).json({ error: message });
 });

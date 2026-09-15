@@ -119,12 +119,12 @@ export function PeerCamera({ stream, state }: { stream: MediaStream | null; stat
         <video ref={videoRef} autoPlay playsInline muted={false} style={{ display: stream ? 'block' : 'none' }} />
         <div className="camera-frame__vignette" />
         {stream ? (
-          <div className="camera-frame__label"><span className="rec-dot" /> OPPONENT</div>
+          <div className="camera-frame__label"><span className="rec-dot" /> LIVE FROM THE OTHER MAC</div>
         ) : (
           <div className="camera-frame__fallback">
             <div className="big">📡</div>
-            <strong style={{ fontSize: 22 }}>Connecting opponent…</strong>
-            <span style={{ opacity: 0.85 }}>{state === 'failed' ? 'A TURN server may be required on this network.' : 'The round still records while video connects.'}</span>
+            <strong style={{ fontSize: 22 }}>Connecting to the other Mac…</strong>
+            <span style={{ opacity: 0.85 }}>{state === 'failed' ? 'Video link failed. Watch them across the room instead; the round still counts.' : 'Their camera appears here once the link is up.'}</span>
           </div>
         )}
       </div>

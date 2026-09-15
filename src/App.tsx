@@ -8,14 +8,19 @@ import { SoundToggle } from './components/ui/SoundToggle';
 import { PROMPTS } from './data/prompts';
 import { ActingRound } from './screens/ActingRound';
 import { Home } from './screens/Home';
-import { JoinGame } from './screens/JoinGame';
 import { Judging } from './screens/Judging';
 import { Lobby } from './screens/Lobby';
 import { PromptReveal } from './screens/PromptReveal';
 import { RoundComplete } from './screens/RoundComplete';
+import { SpectateRound } from './screens/SpectateRound';
 import { WheelSpin } from './screens/WheelSpin';
 
-type Screen = 'home' | 'join' | 'lobby' | 'wheel' | 'reveal' | 'acting' | 'judging' | 'complete';
+/**
+ * Local two-Mac flow. The API on the host Mac owns the room, prompt, turn and
+ * clock; both browsers poll it. Player 1 (host) spins and starts; player 1 acts
+ * first while player 2 watches, then they swap, then Gemini judges.
+ */
+type Screen = 'home' | 'lobby' | 'wheel' | 'reveal' | 'acting' | 'spectate' | 'judging' | 'complete';
 export type Role = 'host' | 'guest';
 
 const SESSION_KEY = 'char-aids-session';
@@ -24,8 +29,8 @@ const CURTAIN_TOTAL_MS = 1050;
 
 function savedSession(): Session | null {
   try {
-    const value = localStorage.getItem(SESSION_KEY);
-    return value ? JSON.parse(value) as Session : null;
+    const value = sessionStorage.getItem(SESSION_KEY);
+    return value ? (JSON.parse(value) as Session) : null;
   } catch {
     return null;
   }
@@ -35,16 +40,24 @@ function screenForRoom(room: RoomView): Screen {
   if (room.status === 'lobby') return 'lobby';
   if (room.status === 'wheel') return 'wheel';
   if (room.status === 'reveal') return 'reveal';
-  if (room.status === 'round') return 'acting';
+  if (room.status === 'round') return room.youAreActor ? 'acting' : 'spectate';
   if (room.status === 'result') return 'complete';
   return 'judging';
 }
 
-async function waitForResult(session: Session, timeoutMs = 3200) {
+function curtainLabel(next: Screen, room: RoomView): string | null {
+  if (next === 'wheel') return room.roundNumber > 1 ? 'REMATCH!' : "LET'S PLAY!";
+  if (next === 'acting') return 'YOUR TURN!';
+  if (next === 'spectate') return `PLAYER ${room.turn + 1} ACTS!`;
+  if (next === 'complete') return 'VERDICT!';
+  return null;
+}
+
+async function waitForResult(session: Session, timeoutMs = 12_000) {
   const deadline = Date.now() + timeoutMs;
   let latest = await gameApi.getRoom(session);
   while (!latest.result && Date.now() < deadline) {
-    await new Promise((resolve) => window.setTimeout(resolve, 150));
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
     latest = await gameApi.getRoom(session);
   }
   return latest;
@@ -54,14 +67,17 @@ function Game() {
   const [screen, setScreen] = useState<Screen>('home');
   const [session, setSession] = useState<Session | null>(() => savedSession());
   const [room, setRoom] = useState<RoomView | null>(null);
+  const [lanUrls, setLanUrls] = useState<string[]>([]);
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [judgingNote, setJudgingNote] = useState('');
-  const [directClipUpload, setDirectClipUpload] = useState(false);
   const [curtain, setCurtain] = useState({ active: false, label: '' });
   const timers = useRef<number[]>([]);
-  const publishing = useRef(false);
+  const screenRef = useRef<Screen>('home');
+  screenRef.current = screen;
+  const latestRoom = useRef<RoomView | null>(null);
+  const wheelBusy = useRef(false);
   const finishing = useRef(false);
   const sound = useSound();
 
@@ -75,21 +91,37 @@ function Game() {
     ];
   }, [sound]);
 
+  /** Move to whatever screen the room state implies, with a curtain on the big beats. */
+  const showRoom = useCallback((nextRoom: RoomView) => {
+    const next = screenForRoom(nextRoom);
+    if (next === screenRef.current) return;
+    const label = curtainLabel(next, nextRoom);
+    if (label) wipeTo(next, label);
+    else setScreen(next);
+  }, [wipeTo]);
+
   const acceptRoom = useCallback((nextRoom: RoomView) => {
+    latestRoom.current = nextRoom;
     setRoom(nextRoom);
-    if (finishing.current && nextRoom.status === 'round') return;
-    if (nextRoom.status === 'result') finishing.current = false;
-    const nextScreen = screenForRoom(nextRoom);
-    setScreen(nextScreen);
-  }, []);
+    if (finishing.current) return; // uploading / judging: don't flip screens underneath
+    if (wheelBusy.current && nextRoom.status !== 'wheel') return; // let the wheel land first
+    showRoom(nextRoom);
+  }, [showRoom]);
 
   const rememberSession = (nextSession: Session) => {
     setSession(nextSession);
-    localStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
+  };
+
+  const clearSession = () => {
+    sessionStorage.removeItem(SESSION_KEY);
+    setSession(null);
+    setRoom(null);
+    latestRoom.current = null;
   };
 
   useEffect(() => {
-    void gameApi.health().then((health) => setDirectClipUpload(health.directClipUpload)).catch(() => undefined);
+    void gameApi.health().then((health) => setLanUrls(health.lanUrls)).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -103,10 +135,13 @@ function Game() {
         if (active) acceptRoom(nextRoom);
       } catch (refreshError) {
         if (active && !initialized) {
-          localStorage.removeItem(SESSION_KEY);
-          setSession(null);
+          clearSession();
           setScreen('home');
-          setError(refreshError instanceof Error ? refreshError.message : 'That room is no longer available.');
+          setError(refreshError instanceof Error ? refreshError.message : 'That game is no longer available.');
+        } else if (active && refreshError instanceof Error && refreshError.message === 'ROOM_NOT_FOUND') {
+          clearSession();
+          setScreen('home');
+          setError('Player 1 left the game.');
         }
       }
     };
@@ -116,18 +151,8 @@ function Game() {
       active = false;
       window.clearInterval(interval);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [acceptRoom, session]);
-
-  useEffect(() => {
-    if (!session || session.role !== 'host' || !room?.result || room.result.postStatus !== 'queued') return;
-    if (!room.players.every((player) => player.clipReady) || publishing.current) return;
-    publishing.current = true;
-    void gameApi.publish(session)
-      .then(() => gameApi.getRoom(session))
-      .then((nextRoom) => acceptRoom(nextRoom))
-      .catch((publishError) => setError(publishError instanceof Error ? publishError.message : 'The X post failed.'))
-      .finally(() => { publishing.current = false; });
-  }, [acceptRoom, room, session]);
 
   useEffect(() => () => timers.current.forEach(window.clearTimeout), []);
 
@@ -143,20 +168,13 @@ function Game() {
     }
   };
 
-  const startGame = () => void run(async () => {
-    const nextSession = await gameApi.createRoom();
+  const play = () => void run(async () => {
+    const nextSession = await gameApi.pair();
     rememberSession(nextSession);
     const nextRoom = await gameApi.getRoom(nextSession);
+    latestRoom.current = nextRoom;
     setRoom(nextRoom);
-    wipeTo('lobby', 'ROOM READY!');
-  });
-
-  const joinGame = (code: string) => void run(async () => {
-    const nextSession = await gameApi.joinRoom(code);
-    rememberSession(nextSession);
-    const nextRoom = await gameApi.getRoom(nextSession);
-    setRoom(nextRoom);
-    wipeTo('lobby', 'YOU’RE IN!');
+    wipeTo('lobby', nextSession.role === 'host' ? 'PLAYER 1!' : 'PLAYER 2!');
   });
 
   const readyUp = () => void run(async () => {
@@ -168,14 +186,21 @@ function Game() {
 
   const startRound = () => void run(async () => {
     if (!session) return;
-    const nextRoom = await gameApi.start(session);
-    setRoom(nextRoom);
-    wipeTo('wheel', `ROUND ${nextRoom.roundNumber}!`);
+    acceptRoom(await gameApi.start(session));
   });
 
-  const revealPrompt = () => void run(async () => {
-    if (!session || session.role !== 'host') return;
-    acceptRoom(await gameApi.advance(session, 'reveal'));
+  const enterWheel = () => {
+    wheelBusy.current = true;
+  };
+
+  const wheelLanded = () => void run(async () => {
+    wheelBusy.current = false;
+    if (!session) return;
+    if (session.role === 'host') {
+      acceptRoom(await gameApi.advance(session, 'reveal'));
+    } else if (latestRoom.current) {
+      acceptRoom(latestRoom.current);
+    }
   });
 
   const beginActing = () => void run(async () => {
@@ -184,79 +209,86 @@ function Game() {
   });
 
   const playAgain = () => void run(async () => {
-    if (session) await gameApi.leave(session).catch(() => undefined);
-    const nextSession = await gameApi.createRoom();
-    rememberSession(nextSession);
-    setConsent(false);
-    const nextRoom = await gameApi.getRoom(nextSession);
-    setRoom(nextRoom);
-    wipeTo('lobby', 'AGAIN!');
+    if (!session) return;
+    acceptRoom(await gameApi.start(session));
   });
 
-  const finishRound = (clip: Blob | null) => {
+  /** The actor's turn ended: store the clip, hand over, and judge after the second turn. */
+  const finishTurn = (clip: Blob | null) => {
     if (!session) return;
     finishing.current = true;
+    setJudgingNote('Saving your performance');
     setScreen('judging');
-    setJudgingNote('Returning the verdict within three seconds');
-    if (clip) {
-      void gameApi.uploadClip(session, clip, directClipUpload)
-        .then((nextRoom) => acceptRoom(nextRoom))
-        .catch((uploadError) => setError(uploadError instanceof Error ? uploadError.message : 'The full recording could not be stored.'));
-    }
-    void gameApi.judge(session)
-      .then((result) => {
-        finishing.current = false;
-        setRoom((current) => current ? { ...current, status: 'result', result } : current);
-        wipeTo('complete', 'VERDICT!');
-      })
-      .catch(async (judgeError) => {
-        setJudgingNote('The request timed out; checking the server result');
-        try {
-          const nextRoom = await waitForResult(session);
-          acceptRoom(nextRoom);
-          if (!nextRoom.result) throw judgeError;
-        } catch (finalError) {
-          setError(finalError instanceof Error ? finalError.message : 'Judging failed.');
+    void (async () => {
+      try {
+        if (clip) await gameApi.uploadClip(session, clip).catch(() => undefined);
+        const view = await gameApi.finish(session);
+        if (view.status === 'judging') {
+          setJudgingNote('Gemini is comparing both performances');
+          try {
+            await gameApi.judge(session);
+          } catch {
+            // Slow verdict: fall through to polling below.
+          }
+          const final = await waitForResult(session);
+          finishing.current = false;
+          acceptRoom(final);
+          if (!final.result) setError('Judging failed. Try a rematch.');
+        } else {
+          finishing.current = false;
+          acceptRoom(view);
         }
-      });
+      } catch (finishError) {
+        finishing.current = false;
+        setError(finishError instanceof Error ? finishError.message : 'Could not finish the turn.');
+      }
+    })();
   };
 
   const goHome = () => {
     if (session) void gameApi.leave(session).catch(() => undefined);
-    localStorage.removeItem(SESSION_KEY);
-    setSession(null);
-    setRoom(null);
+    clearSession();
     setError('');
+    setConsent(false);
+    wheelBusy.current = false;
+    finishing.current = false;
     setScreen('home');
   };
 
   const promptIndex = room?.prompt ? PROMPTS.findIndex((item) => item.label === room.prompt) : 0;
   const safePromptIndex = promptIndex >= 0 ? promptIndex : 0;
   const prompt = PROMPTS[safePromptIndex];
+  const roundKey = room ? `${room.roundNumber}-${room.turn}` : '0';
 
   return (
     <div className="app">
-      <Background variant={screen === 'home' || screen === 'join' ? 'video' : 'gradient'} />
+      <Background variant={screen === 'home' ? 'video' : 'gradient'} />
       <SoundToggle />
-      {error && <div className="host-wait" role="alert">⚠️ {error}</div>}
+      {error && (
+        <div className="host-wait app__error" role="alert" onClick={() => setError('')}>
+          ⚠️ {error}
+        </div>
+      )}
       <AnimatePresence mode="wait">
-        {screen === 'home' && <Home key="home" onStart={startGame} onJoin={() => setScreen('join')} />}
-        {screen === 'join' && <JoinGame key="join" onJoin={joinGame} onBack={goHome} />}
+        {screen === 'home' && <Home key="home" onStart={play} busy={busy} />}
         {screen === 'lobby' && session && room && (
-          <Lobby key="lobby" role={session.role} room={room} playerId={session.playerId} consent={consent} busy={busy} onConsent={setConsent} onReady={readyUp} onStart={startRound} onHome={goHome} />
+          <Lobby key="lobby" role={session.role} room={room} playerId={session.playerId} lanUrls={lanUrls} consent={consent} busy={busy} onConsent={setConsent} onReady={readyUp} onStart={startRound} onHome={goHome} />
         )}
         {screen === 'wheel' && session && room && (
-          <WheelSpin key={`wheel-${room.roundNumber}`} prompts={PROMPTS} targetIndex={safePromptIndex} code={room.roomCode} role={session.role} onLanded={revealPrompt} />
+          <WheelSpin key={`wheel-${room.roundNumber}`} prompts={PROMPTS} targetIndex={safePromptIndex} role={session.role} onSpinStart={enterWheel} onLanded={wheelLanded} />
         )}
         {screen === 'reveal' && session && room && (
           <PromptReveal key={`reveal-${room.roundNumber}`} prompt={prompt} role={session.role} onStart={beginActing} />
         )}
         {screen === 'acting' && session && room?.startedAt && room.endsAt && (
-          <ActingRound key={`acting-${room.roundNumber}`} role={session.role} prompt={prompt} session={session} startedAt={room.startedAt} endsAt={room.endsAt} playerCount={room.players.length} onDone={finishRound} />
+          <ActingRound key={`acting-${roundKey}`} prompt={prompt} session={session} turn={room.turn} startedAt={room.startedAt} endsAt={room.endsAt} onDone={finishTurn} />
         )}
-        {screen === 'judging' && <Judging key="judging" note={judgingNote} />}
+        {screen === 'spectate' && session && room?.startedAt && room.endsAt && (
+          <SpectateRound key={`spectate-${roundKey}`} session={session} turn={room.turn} startedAt={room.startedAt} endsAt={room.endsAt} />
+        )}
+        {screen === 'judging' && <Judging key="judging" note={judgingNote || 'Gemini is comparing both performances'} />}
         {screen === 'complete' && session && room?.result && (
-          <RoundComplete key={`complete-${room.roundNumber}`} role={session.role} prompt={prompt} result={room.result} clipsReady={room.players.every((player) => player.clipReady)} onPlayAgain={playAgain} onHome={goHome} />
+          <RoundComplete key={`complete-${room.roundNumber}`} role={session.role} prompt={prompt} result={room.result} onPlayAgain={playAgain} onHome={goHome} />
         )}
       </AnimatePresence>
       <Curtain active={curtain.active} label={curtain.label} />

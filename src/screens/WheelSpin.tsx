@@ -18,15 +18,20 @@ const SPARKLES = [
 interface WheelSpinProps {
   prompts: Prompt[];
   targetIndex: number;
-  code: string;
   role: Role;
+  onSpinStart?: () => void;
   onLanded: (index: number) => void;
 }
 
-export function WheelSpin({ prompts, targetIndex, code, role, onLanded }: WheelSpinProps) {
+export function WheelSpin({ prompts, targetIndex, role, onSpinStart, onLanded }: WheelSpinProps) {
   const [spin, setSpin] = useState(false);
   const [phase, setPhase] = useState<WheelPhase>('idle');
   const isHost = role === 'host';
+
+  useEffect(() => {
+    if (spin) onSpinStart?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spin]);
 
   // The server entering the wheel phase is the guest's synchronized spin signal.
   useEffect(() => {
@@ -44,9 +49,6 @@ export function WheelSpin({ prompts, targetIndex, code, role, onLanded }: WheelS
       transition={{ type: 'spring', stiffness: 180, damping: 18 }}
     >
       <motion.div className="wheel-meta" initial={{ y: -30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ type: 'spring', stiffness: 300, damping: 18 }}>
-        <span className="chip chip--sm">
-          🔑 <span className="chip__code">{code}</span>
-        </span>
         <RoleBadge role={role} />
       </motion.div>
 

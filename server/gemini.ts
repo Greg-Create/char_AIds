@@ -112,17 +112,19 @@ export async function compareSegmentScores(prompt: string, players: Player[]): P
         .sort((a, b) => a.segmentIndex - b.segmentIndex)
         .map(({ segmentIndex, accuracy, energy, motionClarity, note }) => ({ segmentIndex, accuracy, energy, motionClarity, note })),
     }));
-    return await generate([
+    const raw = await generate([
       { text: `You are finalizing a 1v1 charades result for target "${prompt}". The native-video windows were already analyzed chronologically. Choose the clearer overall performance using the ordered evidence below. Return immediately with winnerIndex 0 or 1, two integer scores, and a funny verdict under 14 words.\n${JSON.stringify(summaries)}` },
     ], {
       type: "OBJECT",
       properties: {
-        winnerIndex: { type: "INTEGER", enum: [0, 1] },
+        winnerIndex: { type: "INTEGER", minimum: 0, maximum: 1 },
         scores: { type: "ARRAY", items: { type: "INTEGER", minimum: 0, maximum: 100 }, minItems: 2, maxItems: 2 },
         verdict: { type: "STRING" },
       },
       required: ["winnerIndex", "scores", "verdict"],
-    }, 1800) as ComparedResult;
+    }, 7000) as ComparedResult;
+    const winnerIndex: 0 | 1 = raw.winnerIndex === 1 ? 1 : 0;
+    return { winnerIndex, scores: raw.scores, verdict: raw.verdict };
   } catch (error) {
     console.error(error);
     return fallback;

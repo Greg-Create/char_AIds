@@ -4,7 +4,7 @@ import { BigButton } from '../components/ui/BigButton';
 const TITLE = 'charAIds';
 const LETTER_COLORS = ['#ffd93d', '#ff6bb5', '#38bdf8', '#4ade80', '#ffffff', '#ff8a3d', '#a78bfa', '#ffd93d', '#ff6bb5'];
 
-export function Home({ onStart, onJoin }: { onStart: () => void; onJoin: () => void }) {
+export function Home({ onStart, busy }: { onStart: () => void; busy?: boolean }) {
   return (
     <motion.div className="screen screen--home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, scale: 0.96 }} transition={{ duration: 0.3 }}>
       <motion.div
@@ -44,16 +44,13 @@ export function Home({ onStart, onJoin }: { onStart: () => void; onJoin: () => v
       </div>
 
       <motion.div className="home__actions" initial={{ opacity: 0, scale: 0.6 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 1.1, type: 'spring', stiffness: 260, damping: 14 }}>
-        <BigButton variant="primary" icon="🎉" attention onClick={onStart}>
-          Play
-        </BigButton>
-        <BigButton variant="secondary" icon="🔑" onClick={onJoin}>
-          Join Game
+        <BigButton variant="primary" icon="🎉" attention disabled={busy} onClick={onStart}>
+          {busy ? 'Connecting…' : 'Play'}
         </BigButton>
       </motion.div>
 
       <motion.p className="home__hint" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 1.6 }}>
-        Grab your friends. The host spins, everyone acts, the room judges.
+        Two Macs, one network. Press PLAY on both. Take turns. Gemini picks the winner.
       </motion.p>
     </motion.div>
   );
