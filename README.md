@@ -7,21 +7,20 @@ A bright, bubbly, slightly ridiculous charades party game. The host spins a carn
 ## Play flow
 
 ```
-Host:   Home → PLAY → Wheel (press SPIN) → Prompt reveal (press START ACTING)
-        → camera permission → 3-2-1-ACT! → 15-second round → TIME'S UP → PLAY AGAIN / home
+Host:   Home → PLAY → Lobby → Wheel (press SPIN) → Prompt reveal
+        → synchronized countdown → 15-second round → Gemini verdict → PLAY AGAIN / home
 
-One party is exactly one round. PLAY AGAIN starts a brand-new party with a fresh code.
+One party is exactly one round. PLAY AGAIN creates a new room with a fresh code.
 
 Guest:  Home → JOIN GAME (6-letter code) → same screens, but every host control
         is replaced by a "Waiting for the host…" pill.
 ```
 
-There is no backend yet. Guest devices simulate the host with a short delay via
-`src/game/useSimulatedHost.ts`. That hook is the single seam to replace with a
-real party channel later; nothing else needs to know.
-
-The round timer only starts once the camera permission prompt has been answered,
-then counts in with 3-2-1-ACT! on the camera frame.
+The frontend is connected to the real room API. The server owns the six-character
+room code, prompt, phase, start time, and verdict. Both clients poll the durable
+room state and use the same absolute round clock. WebRTC signaling is included so
+players can see each other; configure TURN for networks where direct peer
+connections are blocked.
 
 ## Run it
 
@@ -30,7 +29,10 @@ npm install
 npm run dev
 ```
 
-Then open the printed localhost URL. `npm run build` type-checks and produces a production bundle in `dist/`.
+Then open `http://localhost:5173`. The development command runs the API on
+port 8787 and Vite on port 5173. `npm run build` type-checks the full project
+and produces a production bundle in `dist/`; `npm test` exercises the two-player
+API lifecycle.
 
 ## Stack
 
@@ -38,14 +40,59 @@ Then open the printed localhost URL. `npm run build` type-checks and produces a 
 - Framer Motion for springs, transitions and the pointer flapper
 - canvas-confetti for particle bursts
 - Web Audio API for procedural placeholder sound effects (no audio files needed)
+- Express API with in-memory local fallbacks and Redis/Vercel Blob production adapters
+- Gemini 3.5 Flash-Lite native-video window analysis with a three-second application deadline
+
+## Backend
+
+Authenticated room requests use `Authorization: Bearer <playerToken>` and
+`X-Player-Id: <playerId>`. See `.env.example` for optional Gemini, Redis, Blob,
+TURN, and X credentials. Without credentials, the API remains runnable locally
+using in-process room and clip storage plus a deterministic judging fallback.
+
+The browser records independent two-second native-video windows during the
+15-second round and sends them to `POST /api/rooms/:code/segments`. At the buzzer it calls
+`POST /api/rooms/:code/judge`; Gemini has a strict 1.8-second inference budget
+and the server falls back to the completed rolling-window scores so the app can
+return a verdict inside its three-second target. The complete recording is saved
+concurrently. Production browsers upload it directly to private Vercel Blob with
+an authenticated, path-scoped token, bypassing Vercel Functions' request-body
+limit; local development uses `POST /api/rooms/:code/clips`.
+
+Gemini 3.5 Flash-Lite does not expose the Gemini Live API. Each rolling request
+therefore uses a real chronological video blob through `generateContent`, with
+`videoMetadata.fps` set to 5. It is not a sequence of independent JPEG calls.
+
+Available endpoints:
+
+- `GET /api/health`
+- `POST /api/rooms`
+- `POST /api/rooms/:code/join`
+- `GET /api/rooms/:code`
+- `POST /api/rooms/:code/leave`
+- `POST /api/rooms/:code/ready`
+- `POST /api/rooms/:code/start`
+- `POST /api/rooms/:code/advance`
+- `POST /api/rooms/:code/segments`
+- `POST /api/rooms/:code/clips`
+- `POST /api/rooms/:code/blob-upload`
+- `POST /api/rooms/:code/clips/register`
+- `POST /api/rooms/:code/judge`
+- `POST /api/rooms/:code/publish`
+- `GET|POST /api/rooms/:code/signals`
+
+For Vercel, import the repository, attach Redis and a private Blob store, and set
+the environment variables from `.env.example`. `vercel.json` builds the Vite
+client and catch-all Node API function together.
 
 ## Project layout
 
 ```
 src/
-  App.tsx                    state machine: home | join | wheel | reveal | acting | complete
-                             plus party state: code, role (host | guest), prompt
-  game/useSimulatedHost.ts   guests' stand-in for host actions until there is a backend
+  App.tsx                    server-synchronized UI state machine and room polling
+  api.ts                     authenticated room, media, signaling, and result client
+  game/recordRound.ts        full recording plus independent two-second video windows
+  game/usePeerVideo.ts       WebRTC connection driven by the signaling API
   audio/
     synth.ts                 every sound effect as one swappable function
     SoundProvider.tsx        useSound() hook + mute toggle (persisted)
@@ -53,7 +100,7 @@ src/
     game/Wheel.tsx           SVG carnival wheel, plays back a precomputed spin
     game/wheelPhysics.ts     friction + peg-flapper simulation; deterministic landing
     game/Countdown.tsx       useRoundTimer + big number (above camera) + horizontal bar (below)
-    game/Camera.tsx          getUserMedia preview with denied/unsupported fallbacks
+    game/Camera.tsx          local and peer video with denied/unsupported fallbacks
     fx/                      ambient background, floating decorations, curtain wipe, confetti
     ui/                      BigButton, SoundToggle, HostWaiting / RoleBadge
   screens/                   one component per game state

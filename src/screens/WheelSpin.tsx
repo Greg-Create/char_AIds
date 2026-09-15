@@ -1,11 +1,10 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Role } from '../App';
 import { Wheel, type WheelPhase } from '../components/game/Wheel';
 import { BigButton } from '../components/ui/BigButton';
 import { HostWaiting, RoleBadge } from '../components/ui/HostWaiting';
 import type { Prompt } from '../data/prompts';
-import { useSimulatedHost } from '../game/useSimulatedHost';
 
 const SPARKLES = [
   { glyph: '✨', top: '4%', left: '4%', d: 1.8 },
@@ -29,8 +28,12 @@ export function WheelSpin({ prompts, targetIndex, code, role, onLanded }: WheelS
   const [phase, setPhase] = useState<WheelPhase>('idle');
   const isHost = role === 'host';
 
-  // Guests don't get a SPIN button: the host spins for the whole party.
-  useSimulatedHost(!isHost && phase === 'idle', 2600, () => setSpin(true));
+  // The server entering the wheel phase is the guest's synchronized spin signal.
+  useEffect(() => {
+    if (isHost || phase !== 'idle') return;
+    const timer = window.setTimeout(() => setSpin(true), 500);
+    return () => window.clearTimeout(timer);
+  }, [isHost, phase]);
 
   return (
     <motion.div

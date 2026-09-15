@@ -17,6 +17,11 @@ dist/
 build/
 .next/
 out/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+.data/
+.vercel/
 
 # OS / editor
 .DS_Store

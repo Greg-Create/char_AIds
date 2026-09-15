@@ -6,7 +6,6 @@ import { useSound } from '../audio/SoundProvider';
 import { BigButton } from '../components/ui/BigButton';
 import { HostWaiting } from '../components/ui/HostWaiting';
 import { burstConfetti, sparkleRain } from '../components/fx/confetti';
-import { useSimulatedHost } from '../game/useSimulatedHost';
 import { ROUND_SECONDS } from './ActingRound';
 
 interface PromptRevealProps {
@@ -18,9 +17,6 @@ interface PromptRevealProps {
 export function PromptReveal({ prompt, role, onStart }: PromptRevealProps) {
   const sound = useSound();
   const isHost = role === 'host';
-
-  // Only the host kicks off the round; guests follow when the host does.
-  useSimulatedHost(!isHost, 3200, onStart);
 
   useEffect(() => {
     sound.reveal();

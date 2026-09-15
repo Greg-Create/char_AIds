@@ -9,16 +9,19 @@ export type CameraStatus = Status;
 interface CameraProps {
   /** Fires once the permission prompt resolves (granted, denied, or unsupported). */
   onReady?: (status: Exclude<Status, 'loading'>) => void;
+  onStream?: (stream: MediaStream | null) => void;
   children?: React.ReactNode;
 }
 
 /** Live webcam preview inside a chunky game frame, with a graceful no-camera fallback. */
-export function Camera({ onReady, children }: CameraProps) {
+export function Camera({ onReady, onStream, children }: CameraProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [attempt, setAttempt] = useState(0);
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+  const onStreamRef = useRef(onStream);
+  onStreamRef.current = onStream;
 
   useEffect(() => {
     if (status !== 'loading') onReadyRef.current?.(status);
@@ -41,6 +44,7 @@ export function Camera({ onReady, children }: CameraProps) {
         }
         stream = s;
         if (videoRef.current) videoRef.current.srcObject = s;
+        onStreamRef.current?.(s);
         setStatus('ok');
       })
       .catch(() => {
@@ -49,6 +53,7 @@ export function Camera({ onReady, children }: CameraProps) {
     return () => {
       cancelled = true;
       stream?.getTracks().forEach((t) => t.stop());
+      onStreamRef.current?.(null);
     };
   }, [attempt]);
 
@@ -98,6 +103,31 @@ export function Camera({ onReady, children }: CameraProps) {
         )}
         {children}
       </motion.div>
+    </div>
+  );
+}
+
+export function PeerCamera({ stream, state }: { stream: MediaStream | null; state: RTCPeerConnectionState }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = stream;
+  }, [stream]);
+
+  return (
+    <div className="camera-wrap">
+      <div className="camera-frame">
+        <video ref={videoRef} autoPlay playsInline muted={false} style={{ display: stream ? 'block' : 'none' }} />
+        <div className="camera-frame__vignette" />
+        {stream ? (
+          <div className="camera-frame__label"><span className="rec-dot" /> OPPONENT</div>
+        ) : (
+          <div className="camera-frame__fallback">
+            <div className="big">📡</div>
+            <strong style={{ fontSize: 22 }}>Connecting opponent…</strong>
+            <span style={{ opacity: 0.85 }}>{state === 'failed' ? 'A TURN server may be required on this network.' : 'The round still records while video connects.'}</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -10,6 +10,7 @@ export function timerColor(frac: number) {
 
 interface RoundTimerOptions {
   seconds: number;
+  endsAt?: number;
   /** The clock only runs while this is true. */
   running: boolean;
   onSecond?: (remainingWhole: number) => void;
@@ -17,7 +18,7 @@ interface RoundTimerOptions {
 }
 
 /** Honest round clock driven by performance.now(), so it survives jank and background tabs. */
-export function useRoundTimer({ seconds, running, onSecond, onDone }: RoundTimerOptions) {
+export function useRoundTimer({ seconds, endsAt, running, onSecond, onDone }: RoundTimerOptions) {
   const [remaining, setRemaining] = useState(seconds);
   const onSecondRef = useRef(onSecond);
   onSecondRef.current = onSecond;
@@ -27,11 +28,11 @@ export function useRoundTimer({ seconds, running, onSecond, onDone }: RoundTimer
   useEffect(() => {
     if (!running) return;
     const start = performance.now();
-    let lastWhole = seconds;
+    let lastWhole = Math.ceil(endsAt ? Math.max(0, (endsAt - Date.now()) / 1000) : seconds);
     let raf = 0;
     let done = false;
     const loop = () => {
-      const rem = Math.max(0, seconds - (performance.now() - start) / 1000);
+      const rem = Math.max(0, endsAt ? (endsAt - Date.now()) / 1000 : seconds - (performance.now() - start) / 1000);
       setRemaining(rem);
       const whole = Math.ceil(rem);
       if (whole !== lastWhole) {
@@ -49,7 +50,7 @@ export function useRoundTimer({ seconds, running, onSecond, onDone }: RoundTimer
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [running, seconds]);
+  }, [endsAt, running, seconds]);
 
   const frac = remaining / seconds;
   return {
