@@ -8,7 +8,9 @@ A bright, bubbly, slightly ridiculous charades party game. The host spins a carn
 
 ```
 Host:   Home → PLAY → Wheel (press SPIN) → Prompt reveal (press START ACTING)
-        → camera permission → 3-2-1-ACT! → 15-second round → TIME'S UP → NEXT ROUND …
+        → camera permission → 3-2-1-ACT! → 15-second round → TIME'S UP → PLAY AGAIN / home
+
+One party is exactly one round. PLAY AGAIN starts a brand-new party with a fresh code.
 
 Guest:  Home → JOIN GAME (6-letter code) → same screens, but every host control
         is replaced by a "Waiting for the host…" pill.
@@ -42,7 +44,7 @@ Then open the printed localhost URL. `npm run build` type-checks and produces a 
 ```
 src/
   App.tsx                    state machine: home | join | wheel | reveal | acting | complete
-                             plus party state: code, role (host | guest), round, prompt
+                             plus party state: code, role (host | guest), prompt
   game/useSimulatedHost.ts   guests' stand-in for host actions until there is a backend
   audio/
     synth.ts                 every sound effect as one swappable function

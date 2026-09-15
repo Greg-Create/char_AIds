@@ -21,11 +21,10 @@ interface WheelSpinProps {
   targetIndex: number;
   code: string;
   role: Role;
-  round: number;
   onLanded: (index: number) => void;
 }
 
-export function WheelSpin({ prompts, targetIndex, code, role, round, onLanded }: WheelSpinProps) {
+export function WheelSpin({ prompts, targetIndex, code, role, onLanded }: WheelSpinProps) {
   const [spin, setSpin] = useState(false);
   const [phase, setPhase] = useState<WheelPhase>('idle');
   const isHost = role === 'host';
@@ -47,7 +46,7 @@ export function WheelSpin({ prompts, targetIndex, code, role, round, onLanded }:
         </span>
         <RoleBadge role={role} />
         <span className="text-white wheel-meta__turn">
-          Round {round} · <strong style={{ color: 'var(--yellow)' }}>everyone acts!</strong>
+          One spin · <strong style={{ color: 'var(--yellow)' }}>everyone acts!</strong>
         </span>
       </motion.div>
 

@@ -14,7 +14,6 @@ const PREROLL_FROM = 3;
 type Stage = 'camera' | 'preroll' | 'acting' | 'over';
 
 interface ActingRoundProps {
-  round: number;
   role: Role;
   prompt: Prompt;
   onDone: () => void;
@@ -27,7 +26,7 @@ const SUBTITLE: Record<Stage, string> = {
   over: "Time's up! 🎉",
 };
 
-export function ActingRound({ round, role, prompt, onDone }: ActingRoundProps) {
+export function ActingRound({ role, prompt, onDone }: ActingRoundProps) {
   const sound = useSound();
   const [stage, setStage] = useState<Stage>('camera');
   const [pre, setPre] = useState(PREROLL_FROM); // 3, 2, 1, then 0 = ACT!
@@ -80,7 +79,7 @@ export function ActingRound({ round, role, prompt, onDone }: ActingRoundProps) {
       <div className="acting">
         <div className="acting__header">
           <motion.h2 className="display acting__user" initial={{ y: -60, scale: 0.6, opacity: 0 }} animate={{ y: 0, scale: 1, opacity: 1 }} transition={{ type: 'spring', stiffness: 300, damping: 14 }}>
-            ROUND {round}
+            SHOWTIME!
           </motion.h2>
           <RoleBadge role={role} />
           <AnimatePresence mode="wait" initial={false}>

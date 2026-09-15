@@ -21,9 +21,9 @@ export type Role = 'host' | 'guest';
 interface GameState {
   code: string;
   role: Role;
-  round: number;
   promptIndex: number;
-  usedPrompts: number[];
+  /** Bumped per party so screens remount with fresh state. */
+  session: number;
 }
 
 const CURTAIN_COVER_MS = 520;
@@ -31,7 +31,7 @@ const CURTAIN_TOTAL_MS = 1050;
 
 function Game() {
   const [screen, setScreen] = useState<Screen>('home');
-  const [game, setGame] = useState<GameState>({ code: '', role: 'host', round: 1, promptIndex: 0, usedPrompts: [] });
+  const [game, setGame] = useState<GameState>({ code: '', role: 'host', promptIndex: 0, session: 0 });
   const [curtain, setCurtain] = useState<{ active: boolean; label: string }>({ active: false, label: '' });
   const timers = useRef<number[]>([]);
   const sound = useSound();
@@ -51,30 +51,34 @@ function Game() {
   );
 
   /**
-   * Pick the next prompt. Everyone in the party acts out the same prompt, so
-   * this is the single source of truth per round. With a backend, the host
-   * would pick and broadcast it; guests would receive it here instead.
+   * One party = one prompt. Everyone acts out the same thing, so this is the
+   * single source of truth. With a backend, the host would pick and broadcast
+   * it; guests would receive it here instead. The previous prompt is avoided
+   * so "Play again" never repeats itself back to back.
    */
-  const beginRound = useCallback((base: GameState): GameState => {
-    const promptIndex = pickPromptIndex(base.usedPrompts);
-    const usedPrompts = base.usedPrompts.length >= PROMPTS.length - 1 ? [promptIndex] : [...base.usedPrompts, promptIndex];
-    return { ...base, promptIndex, usedPrompts };
-  }, []);
+  const newParty = useCallback(
+    (code: string, role: Role): GameState => ({
+      code,
+      role,
+      promptIndex: pickPromptIndex([game.promptIndex]),
+      session: game.session + 1,
+    }),
+    [game.promptIndex, game.session],
+  );
 
   const startGame = () => {
-    setGame(beginRound({ code: generateGameCode(), role: 'host', round: 1, promptIndex: 0, usedPrompts: [] }));
+    setGame(newParty(generateGameCode(), 'host'));
     wipeTo('wheel', "LET'S PLAY!");
   };
 
   const joinGame = (code: string) => {
-    setGame(beginRound({ code, role: 'guest', round: 1, promptIndex: 0, usedPrompts: [] }));
+    setGame(newParty(code, 'guest'));
     wipeTo('wheel', 'YOU’RE IN!');
   };
 
-  const nextRound = () => {
-    const round = game.round + 1;
-    setGame(beginRound({ ...game, round }));
-    wipeTo('wheel', `ROUND ${round}!`);
+  const playAgain = () => {
+    setGame(newParty(generateGameCode(), 'host'));
+    wipeTo('wheel', 'AGAIN!');
   };
 
   const goHome = () => {
@@ -90,12 +94,10 @@ function Game() {
       <AnimatePresence mode="wait">
         {screen === 'home' && <Home key="home" onStart={startGame} onJoin={() => setScreen('join')} />}
         {screen === 'join' && <JoinGame key="join" onJoin={joinGame} onBack={goHome} />}
-        {screen === 'wheel' && (
-          <WheelSpin key={`wheel-${game.round}`} prompts={PROMPTS} targetIndex={game.promptIndex} code={game.code} role={game.role} round={game.round} onLanded={() => setScreen('reveal')} />
-        )}
-        {screen === 'reveal' && <PromptReveal key={`reveal-${game.round}`} prompt={prompt} role={game.role} onStart={() => setScreen('acting')} />}
-        {screen === 'acting' && <ActingRound key={`acting-${game.round}`} round={game.round} role={game.role} prompt={prompt} onDone={() => setScreen('complete')} />}
-        {screen === 'complete' && <RoundComplete key={`complete-${game.round}`} round={game.round} role={game.role} prompt={prompt} onNextRound={nextRound} onHome={goHome} />}
+        {screen === 'wheel' && <WheelSpin key={`wheel-${game.session}`} prompts={PROMPTS} targetIndex={game.promptIndex} code={game.code} role={game.role} onLanded={() => setScreen('reveal')} />}
+        {screen === 'reveal' && <PromptReveal key={`reveal-${game.session}`} prompt={prompt} role={game.role} onStart={() => setScreen('acting')} />}
+        {screen === 'acting' && <ActingRound key={`acting-${game.session}`} role={game.role} prompt={prompt} onDone={() => setScreen('complete')} />}
+        {screen === 'complete' && <RoundComplete key={`complete-${game.session}`} role={game.role} prompt={prompt} onPlayAgain={playAgain} onHome={goHome} />}
       </AnimatePresence>
       <Curtain active={curtain.active} label={curtain.label} />
     </div>
