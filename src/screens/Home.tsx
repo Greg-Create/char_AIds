@@ -46,7 +46,7 @@ export function Home({ onStart, onJoin }: { onStart: () => void; onJoin: () => v
 
       <motion.div className="home__actions" initial={{ opacity: 0, scale: 0.6 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 1.1, type: 'spring', stiffness: 260, damping: 14 }}>
         <BigButton variant="primary" icon="🎉" attention onClick={onStart}>
-          Start Game
+          Play
         </BigButton>
         <BigButton variant="secondary" icon="🔑" onClick={onJoin}>
           Join Game

@@ -7,7 +7,7 @@ A bright, bubbly, slightly ridiculous charades party game. The host spins a carn
 ## Play flow
 
 ```
-Host:   Home → START GAME → Wheel (press SPIN) → Prompt reveal (press START ACTING)
+Host:   Home → PLAY → Wheel (press SPIN) → Prompt reveal (press START ACTING)
         → camera permission → 3-2-1-ACT! → 15-second round → TIME'S UP → NEXT ROUND …
 
 Guest:  Home → JOIN GAME (6-letter code) → same screens, but every host control
