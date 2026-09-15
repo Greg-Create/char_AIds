@@ -22,3 +22,6 @@ out/
 .DS_Store
 .vscode/
 .idea/
+
+# Local tooling
+.claude/
